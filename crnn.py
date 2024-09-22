@@ -5,7 +5,9 @@ import matplotlib.image as mpimg
 import torchvision.transforms as transforms
 import random
 import PIL
+import os
 
+#读取字符表文件
 def read_chars_map(chars_file):
 	chars_map = []
 	
@@ -36,7 +38,7 @@ def read_chars_map(chars_file):
 #chars_map = ['_', 'H', '4', '尤']
 chars_map = read_chars_map('./data/chars.txt')
 chars_map.insert(0, '_')
-print(chars_map)
+print('chars_map: ', chars_map)
 
 class CRNN(torch.nn.Module):
 	def __init__(self):
@@ -72,37 +74,38 @@ class CRNN(torch.nn.Module):
 			torch.nn.ReLU(),
 		)	
 
-		self.lstm = torch.nn.LSTM(input_size=512, hidden_size=256, num_layers=1, batch_first=True)
-		self.prev_hidden = torch.zeros(1, 1, 256)
-		self.c = torch.zeros(1,1, 256)
-		self.linear = torch.nn.Linear(256, len(chars_map))
+		self.lstm = torch.nn.LSTM(input_size=512, hidden_size=512, num_layers=1, batch_first=True, bidirectional=True)
+		self.prev_hidden = torch.zeros(2, 1, 512)
+		self.c = torch.zeros(2, 1, 512)
+		self.linear = torch.nn.Linear(1024, len(chars_map))
 
-	def forward(self, x):#接收(batch,1,W,32)灰度图片(图片长宽比不变缩放到高度32)
+	def forward(self, x):#接收(batch,1,32,W)灰度图片(图片长宽比不变缩放到高度32)
 		output = self.conv1(x)
 		output = self.conv2(output)
 		output = self.conv3(output)
 		output = self.conv4(output)
-		output = self.conv5(output)
-		#输出(batch,channel, 1, width)
+		output = self.conv5(output)#输出(batch,channel, 1, width)
 
-		#print(output.size())
+		#转换成(batch, width, channel)
 		output = output.squeeze(2)
-		#print(output.size())
-		output = output.reshape(-1, output.size(2), output.size(1))
-		#print(output.size())
-		output, _ = self.lstm(output, (self.prev_hidden, self.c))	
-		#self.prev_hidden = prev_hidden.detach()
-		
+		cnn_x = output.reshape(-1, output.size(2), output.size(1))
+		#====
 
+		output, _ = self.lstm(cnn_x, (self.prev_hidden, self.c))	
+
+		#全连接层
 		output = self.linear(torch.relu(output))
 
+		#然后softmax
 		output = torch.nn.functional.log_softmax(output, dim=2)
 
 
+		#转换成(seq, batch, y)
 		output = output.reshape(output.size(1), output.size(0), output.size(2))
 
 		return output
 
+#字符转成数据化的值
 def str_to_label(val):
 	target = []
 	for item in val:
@@ -110,9 +113,14 @@ def str_to_label(val):
 
 	return torch.tensor(target)
 
+#数据化的值转换成字符
+def label_to_str(label):
+	s = chars_map[torch.argmax(label).item()]
+	return s
+
+#读取训练图片(处理图片按比例resize成高度32px)
 def read_train_data(file_name):
-	data_path = './data/'
-	img = mpimg.imread(data_path + file_name)
+	img = mpimg.imread(file_name)
 	
 	transform = transforms.Compose([
 	   transforms.Grayscale(1), #这一句就是转为单通道灰度图像
@@ -128,16 +136,50 @@ def read_train_data(file_name):
 	img = img.unsqueeze(0)
 
 	return img
+
+#列出所有图片路径及名称
+def list_file_img(path):
+	file_list = []
+
+	for file in os.listdir(path):
+		if not os.path.isdir(path + file):
+			end_pos = file.rfind('.')
+			suffix = file[end_pos + 1:]
+			if suffix == 'jpg':
+				file_list.append((path, file))
+
+		else:
+			file_list.extend(list_file_img(path + file + '/'))
+
+	return file_list
 	
+#获取所有训练图片
+def get_all_target():
+	data_path = './data/'
+
+	img = []
+	for (path, file) in list_file_img(data_path):
+		end_pos = file.rfind('.')	
+		suffix = file[end_pos + 1:]
+		if suffix == 'jpg':
+			prefix = file[:end_pos]
+			img.append({
+				'label_str': prefix,
+				'label': str_to_label(prefix),
+				'file': path + file,  
+			})
+					
+	return img	
+
 
 def train():
-	EPOCH=10000
+	EPOCH=20000
 	optimizer = optim.Adam(model.parameters(), 0.01)
-	criterion= torch.nn.CTCLoss(blank=0, reduction='mean')
+	criterion= torch.nn.CTCLoss(blank=chars_map.index('_'), reduction='mean')
 
 	for i in range(EPOCH):
-		target_img = img[int(random.random() * 3)]
-		output = model(target_img['data'])
+		target_img = img[int(random.random() * len(img))]
+		output = model(read_train_data(target_img['file'])) #(seq,batch,word_vec)
 		#print(type(target.size(1)))
 
 		target = target_img['label'].unsqueeze(0)
@@ -148,23 +190,27 @@ def train():
 		optimizer.step()
 
 		if i % 10 == 0:
-			s = ''
+			out_str = ''
 			for j in range(output.size(0)):
-				s += chars_map[torch.argmax(output[j][0]).item()]
+				out_str += label_to_str(output[j][0])
 
-			print(s)
+			print('target:', target_img['label_str'])
+			print('prep:', out_str)
 			#print(chars_map[torch.argmax(output[72][0]).item()])
 			print('loss:%f' % (loss))
 
 
 
-img = [
-	{ 'label' : str_to_label('HH4尤'), 'data': read_train_data('./HH4尤.jpg') },
-	{ 'label' : str_to_label('4尤'), 'data': read_train_data('./4尤.jpg') },
-	{ 'label' : str_to_label('3'), 'data': read_train_data('./3.jpg') },
-]
+img = get_all_target()
+#print(img)
+#img = [
+#	{ 'label' : str_to_label('HH4尤'), 'data': read_train_data('./HH4尤.jpg') },
+#	{ 'label' : str_to_label('4尤'), 'data': read_train_data('./4尤.jpg') },
+#	{ 'label' : str_to_label('3'), 'data': read_train_data('./3.jpg') },
+#]
 
 model = CRNN()
-
-print(str_to_label('HH4尤'))
+model.load_state_dict(torch.load('bi_checkpoint.pth')['model']);#读取权重
 train()
+
+torch.save({'model': model.state_dict()}, './bi_checkpoint.pth');#保存训练好的权重
