@@ -6,6 +6,7 @@ import torchvision.transforms as transforms
 import random
 import PIL
 import os
+import sys
 
 #读取字符表文件
 def read_chars_map(chars_file):
@@ -200,17 +201,34 @@ def train():
 			print('loss:%f' % (loss))
 
 
-
-img = get_all_target()
-#print(img)
-#img = [
-#	{ 'label' : str_to_label('HH4尤'), 'data': read_train_data('./HH4尤.jpg') },
-#	{ 'label' : str_to_label('4尤'), 'data': read_train_data('./4尤.jpg') },
-#	{ 'label' : str_to_label('3'), 'data': read_train_data('./3.jpg') },
-#]
-
 model = CRNN()
 model.load_state_dict(torch.load('bi_checkpoint.pth')['model']);#读取权重
-train()
 
-torch.save({'model': model.state_dict()}, './bi_checkpoint.pth');#保存训练好的权重
+if len(sys.argv) == 1:
+	img = get_all_target()
+	#print(img)
+	#img = [
+	#	{ 'label' : str_to_label('HH4尤'), 'data': read_train_data('./HH4尤.jpg') },
+	#	{ 'label' : str_to_label('4尤'), 'data': read_train_data('./4尤.jpg') },
+	#	{ 'label' : str_to_label('3'), 'data': read_train_data('./3.jpg') },
+	#]
+	train()
+	torch.save({'model': model.state_dict()}, './bi_checkpoint.pth');#保存训练好的权重
+elif sys.argv[1] == 'test':
+	file_path = sys.argv[2]
+	test_img = read_train_data(file_path)
+	plt.imshow(test_img.squeeze(0).squeeze(0))
+	plt.show()
+	str_label = file_path[file_path.rfind('/') + 1:file_path.rfind('.')]
+
+	print('测试标签:' + str_label)
+
+	output = model(test_img)	
+	out_str = ''
+	for i in range(output.size(0)):
+		out_str += label_to_str(output[i][0])
+
+	print(out_str)
+
+else:
+	print('参数错误')
